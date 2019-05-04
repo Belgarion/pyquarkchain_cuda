@@ -7,12 +7,19 @@ from typing import Dict, List
 
 from Crypto.Hash import keccak
 
+import pycuda.autoinit
+import pycuda.driver as cudadrv
+
 FNV_PRIME_64 = 0x100000001b3
 UINT64_MAX = 2 ** 64
 
 CACHE_ENTRIES = 1024 * 64
 ACCESS_ROUND = 64
 WORD_BYTES = 8
+
+blocks = 8
+threads = 200
+num_devices = cudadrv.Device.count()
 
 
 def serialize_hash(h):
@@ -143,8 +150,9 @@ class QkcHashNative:
         self._hash_func.restype = None
         self._hash_func.argtypes = (
             ctypes.c_void_p,  # cache pointer
-            ctypes.POINTER(ctypes.c_uint64),  # input seed
-            ctypes.POINTER(ctypes.c_uint64),
+            #ctypes.POINTER(ctypes.c_uint64),  # input seed
+            ctypes.POINTER(ctypes.c_uint64), # result
+            ctypes.POINTER(ctypes.c_ubyte), # target
         )  # output result
 
         self._cache_create = self._lib.cache_create
@@ -164,16 +172,35 @@ class QkcHashNative:
         ptr = self._cache_create(cache, len(cache))
         return QkcHashCache(self, ptr)
 
-    def calculate_hash(self, header, nonce, cache):
-        s = sha3_512(header + nonce[::-1])
-        seed = list_to_uint64_array(s)
-        result = (ctypes.c_uint64 * 4)()
+    def calculate_hash(self, header, nonce, cache, target, blocks, threads):
+        i_nonce = int.from_bytes(nonce, byteorder="big")
+        s = []
+        results = (ctypes.c_uint64 * 4 * (blocks*threads))()
+        c_target = (ctypes.c_ubyte * 32)()
+        for i in range(32):
+            c_target[i] = target[i]
 
-        self._hash_func(cache._ptr, seed, result)
+        c_nonce = (ctypes.c_uint64)(i_nonce)
+        c_blocks = (ctypes.c_uint32)(blocks)
+        c_threads = (ctypes.c_uint32)(threads)
+        self._hash_func(cache._ptr, ctypes.cast(results, ctypes.POINTER(ctypes.c_uint64)), c_target, header, c_nonce, c_blocks, c_threads)
+        digests = []
+        results_out = []
+        nonce_out = results[1][1]
+        n = (i_nonce + nonce_out).to_bytes(8, byteorder="big")
+        lseed = sha3_512(header + n[::-1])
+        digests.append(serialize_hash(results[0]))
+        results_out.append(serialize_hash(sha3_256(lseed + results[0][:])))
+        #print("results_out[0]:", results_out[0].hex())
 
         return {
-            "mix digest": serialize_hash(result),
-            "result": serialize_hash(sha3_256(s + result[:])),
+            #"mix digest": serialize_hash(result),
+            #"result": serialize_hash(sha3_256(s + result[:])),
+            #"mix digest": digests[0],
+            #"result": results_out[0],
+            "mix digest": digests,
+            "result": results_out,
+            "nonce": nonce_out,
         }
 
 

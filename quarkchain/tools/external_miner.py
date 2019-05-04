@@ -1,3 +1,5 @@
+import sys
+sys.path.append("/home/ubuntu/pyquarkchain")
 import argparse
 import copy
 import functools

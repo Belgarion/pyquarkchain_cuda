@@ -17,9 +17,17 @@ from quarkchain.config import ConsensusType
 from quarkchain.core import MinorBlock, MinorBlockHeader, RootBlock, RootBlockHeader
 from quarkchain.utils import Logger, sha256, time_ms
 
+import pycuda.autoinit
+import pycuda.driver as cudadrv
+
 Block = Union[MinorBlock, RootBlock]
 MAX_NONCE = 2 ** 64 - 1  # 8-byte nonce max
 
+
+# Make sure these values are the same as in C
+BLOCKS = 8
+THREADS = 200
+num_devices = cudadrv.Device.count()
 
 def validate_seal(
     block_header: Union[RootBlockHeader, MinorBlockHeader],
@@ -104,9 +112,14 @@ class Qkchash(MiningAlgorithm):
     def __init__(self, work: MiningWork, **kwargs):
         self.miner = QkchashMiner(work.height, work.difficulty, work.hash)
 
+    def set_worksize(self, blocks, threads):
+        self.blocks = blocks
+        self.threads = threads
+
     def mine(self, start_nonce: int, end_nonce: int) -> Optional[MiningResult]:
         nonce_found, mixhash = self.miner.mine(
-            rounds=end_nonce - start_nonce, start_nonce=start_nonce
+            rounds=end_nonce - start_nonce, start_nonce=start_nonce,
+            blocks = self.blocks, threads = self.threads
         )
         if not nonce_found:
             return None
@@ -360,7 +373,9 @@ class Miner:
                         work, mining_params = input_q.get(block=True)
                         continue
 
-                rounds = mining_params.get("rounds", 100)
+                #rounds = mining_params.get("rounds", 100)
+                rounds = BLOCKS * THREADS * num_devices
+                mining_algo.set_worksize(BLOCKS, THREADS)
                 start_nonce = random.randint(0, MAX_NONCE)
                 # inner loop for iterating nonce
                 while True:
@@ -388,8 +403,10 @@ class Miner:
                     start_nonce += rounds
         except:
             from sys import exc_info
+            import traceback
 
             exc_type, exc_obj, exc_trace = exc_info()
+            traceback.print_exc()
             print("exc_type", exc_type)
             print("exc_obj", exc_obj)
             print("exc_trace", exc_trace)
